@@ -1,0 +1,40 @@
+[project]
+name = "customer-churn"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Muntean Ioan Horia Mihai",email = "ihmmuntean@yahoo.com"}
+]
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pandas (>=3.0.5,<4.0.0)",
+    "scikit-learn (>=1.9.0,<2.0.0)",
+    "numpy (>=2.5.2,<3.0.0)",
+    "matplotlib (>=3.11.1,<4.0.0)",
+    "seaborn (>=0.13.2,<0.14.0)"
+]
+
+[tool.poetry]
+packages = [{include = "customer_churn", from = "src"}]
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pytest (>=9.1.1,<10.0.0)",
+    "ruff (>=0.16.5,<0.17.0)",
+    "jupyter (>=1.1.1,<2.0.0)"
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
