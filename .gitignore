@@ -38,3 +38,8 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+
+# MLflow
+mlflow.db
+mlruns/
+mlartifacts/
