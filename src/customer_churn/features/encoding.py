@@ -21,24 +21,22 @@ CATEGORICAL_COLS = [
 NUMERIC_COLS = ["SeniorCitizen", "tenure", "MonthlyCharges", "TotalCharges"]
 
 
+def transform_features(df: pd.DataFrame, encoder: OneHotEncoder) -> pd.DataFrame:
+    encoded = pd.DataFrame(
+        encoder.transform(df[CATEGORICAL_COLS]),
+        columns=encoder.get_feature_names_out(CATEGORICAL_COLS),
+        index=df.index,
+    )
+    return pd.concat([df[NUMERIC_COLS], encoded], axis=1)
+
+
 def encode_features(
     train_df: pd.DataFrame, test_df: pd.DataFrame
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> tuple[pd.DataFrame, pd.DataFrame, OneHotEncoder]:
     encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
     encoder.fit(train_df[CATEGORICAL_COLS])
 
-    train_encoded = pd.DataFrame(
-        encoder.transform(train_df[CATEGORICAL_COLS]),
-        columns=encoder.get_feature_names_out(CATEGORICAL_COLS),
-        index=train_df.index,
-    )
-    test_encoded = pd.DataFrame(
-        encoder.transform(test_df[CATEGORICAL_COLS]),
-        columns=encoder.get_feature_names_out(CATEGORICAL_COLS),
-        index=test_df.index,
-    )
+    train_out = transform_features(train_df, encoder)
+    test_out = transform_features(test_df, encoder)
 
-    train_out = pd.concat([train_df[NUMERIC_COLS], train_encoded], axis=1)
-    test_out = pd.concat([test_df[NUMERIC_COLS], test_encoded], axis=1)
-
-    return train_out, test_out
+    return train_out, test_out, encoder

@@ -3,8 +3,12 @@ from typing import Callable
 import mlflow
 import optuna
 import pandas as pd
+from imblearn.over_sampling import RandomOverSampler
+from imblearn.pipeline import Pipeline as ImbPipeline
 from sklearn.base import BaseEstimator
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import cross_validate
+from xgboost import XGBClassifier
 
 SCORING = ["f1", "roc_auc", "precision", "recall"]
 
@@ -68,12 +72,18 @@ def train_and_register(
     log_model_fn: Callable[..., None],
     X: pd.DataFrame,
     y: pd.Series,
+    log_model_kwargs: dict | None = None,
 ) -> None:
     model = model_class(**params)
     model.fit(X, y)
     with mlflow.start_run(run_name=run_name):
         mlflow.log_params(params)
-        log_model_fn(model, artifact_path="model", registered_model_name=registered_model_name)
+        log_model_fn(
+            model,
+            artifact_path="model",
+            registered_model_name=registered_model_name,
+            **(log_model_kwargs or {}),
+        )
 
 
 def rf_param_space(trial: optuna.Trial) -> dict:
@@ -96,3 +106,21 @@ def xgb_param_space(trial: optuna.Trial) -> dict:
         "colsample_bytree": trial.suggest_float("colsample_bytree", 0.6, 1.0),
         "scale_pos_weight": trial.suggest_categorical("scale_pos_weight", [1, 2.77]),
     }
+
+
+def make_oversampled_rf(**params) -> ImbPipeline:
+    return ImbPipeline(
+        [
+            ("oversample", RandomOverSampler(random_state=42)),
+            ("clf", RandomForestClassifier(**params)),
+        ]
+    )
+
+
+def make_oversampled_xgb(**params) -> ImbPipeline:
+    return ImbPipeline(
+        [
+            ("oversample", RandomOverSampler(random_state=42)),
+            ("clf", XGBClassifier(**params)),
+        ]
+    )

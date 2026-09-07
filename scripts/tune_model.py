@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 import mlflow
@@ -8,6 +9,8 @@ from xgboost import XGBClassifier
 
 from customer_churn.data.loader import load_data
 from customer_churn.models.training import (
+    make_oversampled_rf,
+    make_oversampled_xgb,
     rf_param_space,
     tune_with_optuna,
     xgb_param_space,
@@ -22,6 +25,14 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--oversample", action="store_true")
+    args = parser.parse_args()
+
+    rf_model = make_oversampled_rf if args.oversample else RandomForestClassifier
+    xgb_model = make_oversampled_xgb if args.oversample else XGBClassifier
+    suffix = "_oversampled" if args.oversample else "_tuned"
+
     df = load_data(PROCESSED_TRAIN_PATH)
     X = df.drop(columns=["Churn"])
     y = df["Churn"]
@@ -29,10 +40,10 @@ def main() -> None:
     cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
     rf_best = tune_with_optuna(
-        RandomForestClassifier,
+        rf_model,
         rf_param_space,
         {"random_state": 42},
-        "random_forest_tuned",
+        f"random_forest{suffix}",
         X,
         y,
         cv,
@@ -41,10 +52,10 @@ def main() -> None:
     print("Random Forest best params:", rf_best)
 
     xgb_best = tune_with_optuna(
-        XGBClassifier,
+        xgb_model,
         xgb_param_space,
         {"random_state": 42, "eval_metric": "logloss"},
-        "xgboost_tuned",
+        f"xgboost{suffix}",
         X,
         y,
         cv,

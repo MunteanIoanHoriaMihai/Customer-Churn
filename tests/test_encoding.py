@@ -34,7 +34,7 @@ def test_encode_features_produces_matching_columns():
     train_df = _make_df(["Month-to-month", "One year"])
     test_df = _make_df(["Two year"])
 
-    train_out, test_out = encode_features(train_df, test_df)
+    train_out, test_out, _encoder = encode_features(train_df, test_df)
 
     assert list(train_out.columns) == list(test_out.columns)
 
@@ -43,7 +43,7 @@ def test_encode_features_handles_category_unseen_in_train():
     train_df = _make_df(["Month-to-month", "One year"])
     test_df = _make_df(["Two year"])
 
-    train_out, test_out = encode_features(train_df, test_df)
+    train_out, test_out, _encoder = encode_features(train_df, test_df)
 
     contract_cols = [c for c in test_out.columns if c.startswith("Contract_")]
     assert test_out.loc[0, contract_cols].sum() == 0
