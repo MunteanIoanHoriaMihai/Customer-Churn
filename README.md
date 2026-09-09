@@ -16,6 +16,19 @@ Predicts telecom customer churn from the IBM/Kaggle Telco Customer Churn dataset
 
 The test-set F1 lands within ~0.008 of the cross-validation estimate, and closely matches a published, leakage-free benchmark on the same base dataset (F1 = 0.6525, 10-fold CV + Random Forest + SMOTENC) — see [step 9](#pipeline-step-by-step) for the full comparison.
 
+### Results analysis
+
+Confusion matrix on the test set (374 actual churners, 1035 actual non-churners):
+
+|  | Predicted: No | Predicted: Yes |
+|---|---|---|
+| **Actual: No** | 770 (correct) | 265 (false alarm) |
+| **Actual: Yes** | 79 (missed) | 295 (correct) |
+
+- **Recall over precision, deliberately** — the model catches 295/374 actual churners (79% recall) at the cost of 265 false alarms (53% precision). This skew comes from oversampling/`class_weight` and is the right trade-off for churn: an unnecessary retention offer to a customer who wasn't leaving is cheap; failing to flag a customer who *was* about to leave is the expensive mistake.
+- **What drives the predictions** — consistent with the EDA (`notebooks/eda.ipynb`): `Contract` type and `tenure` are the strongest signals. Month-to-month contracts and low-tenure (newer) customers churn at a much higher rate than customers on one/two-year contracts or with long tenure — the "Fiber optic, month-to-month, new customer" example in [Serving the model](#serving-the-model) scores 88% churn probability for exactly this reason.
+- **Known limitations** — the dataset is a single static snapshot (no time dimension), so the model can't detect trends or seasonality, and it will degrade over time as real customer behavior drifts from what it was trained on. Precision of 53% also means that a significant number of the customers flagged as "at risk" are false alarms — fine for a low-cost intervention (an email, a call), less fine if the retention action itself is expensive.
+
 ## Table of contents
 
 - [Quick start](#quick-start)
@@ -28,6 +41,7 @@ The test-set F1 lands within ~0.008 of the cross-validation estimate, and closel
 - [Experiment tracking](#experiment-tracking)
 - [Testing](#testing)
 - [Linting & formatting](#linting--formatting)
+- [Out of scope](#out-of-scope)
 
 ## Quick start
 
@@ -174,3 +188,11 @@ poetry run ruff format .
 ```
 
 Runs automatically on every commit (pre-commit hook, with `--fix`).
+
+## Out of scope
+
+Discussed but deliberately not implemented, given the project's scope (local demo, not a production deployment):
+
+- **Prediction logging / drift monitoring** — the API doesn't log requests anywhere; there's no record of what it's been asked to predict, so no data/prediction drift detection (e.g. with [Evidently](https://www.evidentlyai.com/)) is possible without adding that first.
+- **CD (continuous deployment)** — CI runs lint + tests on every push; nothing deploys automatically anywhere, since there's no live hosting target configured.
+- **A live MLflow server** — the model registry runs on a local SQLite backend, which is why the Docker image bakes in the model artifacts directly rather than fetching them from a network-accessible registry at startup (see [Running with Docker](#running-with-docker)).
