@@ -1,12 +1,69 @@
 # Customer Churn Prediction
 
-Machine learning project for predicting customer churn, using the Telco Customer Churn dataset (IBM/Kaggle, ~7043 rows, target `Churn`).
+Predicts telecom customer churn from the IBM/Kaggle Telco Customer Churn dataset (~7043 rows), with a full pipeline from raw data to a served, containerized model.
 
-## Setup
+![CI](https://github.com/MunteanIoanHoriaMihai/Customer-Churn/actions/workflows/ci.yml/badge.svg)
+
+## Results
+
+| Model | F1 | ROC-AUC | Precision | Recall |
+|---|---|---|---|---|
+| Baseline (majority class) | 0.00 | 0.50 | 0.00 | 0.00 |
+| Random Forest (tuned) | 0.6356 | 0.8457 | 0.5404 | 0.7719 |
+| XGBoost (tuned) | 0.6281 | 0.8412 | 0.5561 | 0.7217 |
+| **XGBoost + oversampling (registered, v2)** | **0.6392** (CV) | 0.8468 | 0.5434 | 0.7766 |
+| **Final test-set evaluation (unseen data)** | **0.6317** | **0.8455** | **0.5268** | **0.7888** |
+
+The test-set F1 lands within ~0.008 of the cross-validation estimate, and closely matches a published, leakage-free benchmark on the same base dataset (F1 = 0.6525, 10-fold CV + Random Forest + SMOTENC) — see [step 9](#pipeline-step-by-step) for the full comparison.
+
+## Table of contents
+
+- [Quick start](#quick-start)
+- [Pipeline overview](#pipeline-overview)
+- [Project structure](#project-structure)
+- [Pipeline, step by step](#pipeline-step-by-step)
+- [Key architectural decisions](#key-architectural-decisions)
+- [Serving the model](#serving-the-model)
+- [Running with Docker](#running-with-docker)
+- [Experiment tracking](#experiment-tracking)
+- [Testing](#testing)
+- [Linting & formatting](#linting--formatting)
+
+## Quick start
 
 ```
 poetry install
 poetry run pre-commit install
+```
+
+Reproduce the full pipeline end to end:
+
+```
+poetry run python scripts/prepare_data.py
+poetry run python scripts/split_data.py
+poetry run python scripts/build_features.py
+poetry run python scripts/train_model.py
+poetry run python scripts/tune_model.py
+poetry run python scripts/tune_model.py --oversample
+poetry run python scripts/register_models.py
+poetry run python scripts/evaluate_model.py
+```
+
+`register_models.py` registers the current best model (`churn_xgboost` v2, oversampled) by default; the original Random Forest / XGBoost v1 registration calls are kept in the file (commented out in `main()`) for reference/reproducibility, not re-run automatically.
+
+## Pipeline overview
+
+```mermaid
+flowchart LR
+    A[Raw CSV] --> B[Clean]
+    B --> C[Split train / test]
+    C --> D[EDA on train]
+    D --> E[Feature engineering]
+    E --> F[Train + tune models]
+    F --> G[Register in MLflow]
+    G --> H[Evaluate on test]
+    H --> I[Serve via FastAPI]
+    I --> J[Docker container]
 ```
 
 ## Project structure
@@ -26,9 +83,10 @@ src/customer_churn/
 ├── features/     # imputation, encoding
 └── models/       # training, evaluation, MLflow logging
 tests/            # unit tests for the project's own logic
+Dockerfile        # multi-stage build for the API
 ```
 
-## Pipeline (step by step)
+## Pipeline, step by step
 
 1. **Technical cleaning** (`scripts/prepare_data.py`) — dtype conversion (`TotalCharges` string → numeric), exact duplicate removal, filtering out impossible values (negative tenure, etc.). Saves `data/interim/cleaned.csv`.
 2. **Train/test split** (`scripts/split_data.py`) — 80/20, stratified on `Churn`, done **before** the in-depth EDA.
@@ -40,7 +98,8 @@ tests/            # unit tests for the project's own logic
 8. **Oversampling variant** (`scripts/tune_model.py --oversample`) — retried tuning with `RandomOverSampler` (not SMOTE — chosen deliberately to sidestep the invalid-fractional-values problem SMOTE's interpolation causes on one-hot encoded columns), wrapped in an `imblearn.Pipeline` so resampling only ever touches the CV training fold, never validation. Result: XGBoost improves to F1 = 0.6392 (new best); Random Forest gets slightly worse (0.6336), since `class_weight="balanced"` was already covering most of that benefit for it. The improved XGBoost was registered as `churn_xgboost` v2.
 9. **Sanity-checked against leakage and published results** — audited the whole pipeline for the specific mistake that inflates many public results on this dataset (applying SMOTE/scaling/encoding before the train/test split or outside the CV loop) and confirmed our pipeline avoids it. Cross-referenced F1 = 0.6392 against a study using the same base dataset with a properly leakage-free method (10-fold CV, Random Forest + SMOTENC): they report F1 = 0.6525 — closely matching ours, which is good evidence our number is a genuine, unleaked result rather than something being left on the table by a methodology mistake.
 10. **Final evaluation** (`scripts/evaluate_model.py`) — `churn_xgboost` v2 loaded straight from the MLflow Model Registry (not retrained) and scored, once, on the held-out test set (never touched before this point). Result: F1 = 0.6317, ROC-AUC = 0.8455, precision = 0.5268, recall = 0.7888 — very close to the CV estimate (0.6392), confirming the CV score generalizes and wasn't inflated. The precision/recall split is intentional fallout from oversampling: the model catches 295/374 actual churners (79% recall) at the cost of more false alarms (265 false positives) — a reasonable trade-off for churn, where missing a real churner is usually costlier than an unnecessary retention outreach.
-11. **Serving** (`src/customer_churn/api/`) — a small FastAPI app exposing `POST /predict`: takes raw customer fields (the pre-encoding schema), applies the same imputation + the fitted encoder (persisted by `build_features.py` to `models/encoder.joblib`, not refit at request time), then scores with `churn_xgboost` v2 loaded from the Registry. Model and encoder are both loaded once at startup, not per-request. See "Serving the model" below for how to run it.
+11. **Serving** (`src/customer_churn/api/`) — a small FastAPI app exposing `POST /predict`: takes raw customer fields (the pre-encoding schema), applies the same imputation + the fitted encoder (persisted by `build_features.py` to `models/encoder.joblib`, not refit at request time), then scores with `churn_xgboost` v2. Model and encoder are lazy-loaded (first request, not at startup) and injected via FastAPI's dependency system, so tests can substitute fakes without touching real artifacts. See [Serving the model](#serving-the-model) below.
+12. **Containerized** (`Dockerfile`) — multi-stage build (Poetry only in the build stage, not the final image), runs as a non-root user, model/encoder/MLflow artifacts baked into the image for a self-contained `docker run`. See [Running with Docker](#running-with-docker).
 
 ## Key architectural decisions
 
@@ -50,8 +109,8 @@ A few decisions we deliberately insisted on along the way:
 - **Cleaning vs. imputation, kept separate** — `cleaning.py` only does "blind" operations (dtypes, duplicates, impossible values) that don't depend on any pattern discovered in the data. Imputation lives separately, in `features/`, explicitly justified by a finding from EDA rather than assumed upfront.
 - **Same CV folds across all models** — a single `StratifiedKFold` reused for every comparison, so score differences between models come from the model itself, not from lucky splits.
 - **MLflow with SQLite backend** (not file-based) — chosen specifically to enable the Model Registry (formal model versioning) at the tuning/final-model stage.
-- **`N803`/`N806` ignored in ruff** — sklearn's `X`/`y` convention for feature matrix / target vector is standard across the ML ecosystem; enforcing lowercase-only naming here would fight the convention for no benefit.
 - **RandomOverSampler over SMOTE/SMOTENC** — given the moderate class imbalance (73.5/26.5) and that `class_weight`/`scale_pos_weight` already captured part of the benefit, plain oversampling (no interpolation, so no invalid values on one-hot columns) was judged a better cost/benefit than SMOTENC's added complexity.
+- **Model/encoder loaded via dependency injection, lazily** — enables API tests with fake models (fast, no real artifacts needed, CI-safe), at the cost of the server no longer failing fast at startup if an artifact is missing (fails on first request instead).
 
 ## Serving the model
 
@@ -64,6 +123,32 @@ poetry run uvicorn customer_churn.api.main:app --app-dir src --host 127.0.0.1 --
 Requires `models/encoder.joblib` to exist first — generated by `poetry run python scripts/build_features.py`. The server stays in the foreground; **stop it with `Ctrl+C`** in that terminal. To run it in the background instead, add `&` at the end (or open a separate terminal) and stop it later with `kill <pid>` (or Ctrl+C in whichever terminal is running it).
 
 **To send a request from the browser** (no terminal/curl needed): open `http://127.0.0.1:8000/docs` — FastAPI's interactive Swagger UI. Click on **`POST /predict`** to expand it, click **"Try it out"**, edit the example JSON body with a customer's data, then click **"Execute"**. The response (prediction + churn probability) appears right below.
+
+## Running with Docker
+
+Build the image (run from the project root, requires `models/encoder.joblib`, `mlflow.db`, and `mlruns/` to already exist — see [Quick start](#quick-start)):
+
+```
+docker build -t customer-churn-api:latest .
+```
+
+Run it:
+
+```
+docker run -d --name customer-churn-api -p 8000:8000 customer-churn-api:latest
+```
+
+Same interface as running locally — `http://127.0.0.1:8000/docs` for the interactive Swagger UI, or `POST /predict` directly. Manage the container with:
+
+```
+docker ps                          # is it running?
+docker logs customer-churn-api     # view logs
+docker stop customer-churn-api     # stop
+docker start customer-churn-api    # resume (same config, no need to `run` again)
+docker rm customer-churn-api       # remove (needed before a fresh `docker run` with the same name)
+```
+
+The image is self-contained — it bakes in the fitted encoder and the registered model/MLflow artifacts at build time, rather than fetching them from a live registry at startup. That's a simplification appropriate for local/demo use; a production setup would instead point the container at a network-accessible MLflow server so new model versions don't require an image rebuild.
 
 ## Experiment tracking
 
@@ -79,7 +164,7 @@ Opens a local dashboard at `http://localhost:5000`. Use the **"Model training"**
 poetry run pytest
 ```
 
-Unit tests only for the project's own logic (cleaning, imputation, encoding, oversampling pipeline construction, evaluation metrics) — not for functions that mainly orchestrate MLflow/Optuna (`train_and_log`, `tune_with_optuna`, `train_and_register`), which are verified by actually running them instead.
+Unit tests only for the project's own logic (cleaning, imputation, encoding, oversampling pipeline construction, evaluation metrics, the `/predict` API contract with a fake model/encoder injected) — not for functions that mainly orchestrate MLflow/Optuna (`train_and_log`, `tune_with_optuna`, `train_and_register`), which are verified by actually running them instead.
 
 ## Linting & formatting
 
